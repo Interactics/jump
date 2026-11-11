@@ -1,0 +1,38 @@
+# H1-2 -> 7-DOF symmetric planar model (Stage 3) mapping.
+# Draft based on the paper's model; check it against the paper before Phase 3.
+# Joint names match h1_2_handless.urdf / .xml (check_env.py verifies them).
+
+base:
+  solved: [x, z, pitch]          # 3 DOF in the planar model
+  uncontrolled: [y, roll, yaw]   # no actuator; expected near 0 by symmetry
+
+# Solved once in the planar model, copied to both sides (4 DOF -> 8 joints)
+solved:
+  hip_pitch:      [left_hip_pitch_joint,      right_hip_pitch_joint]
+  knee:           [left_knee_joint,           right_knee_joint]
+  ankle_pitch:    [left_ankle_pitch_joint,    right_ankle_pitch_joint]
+  shoulder_pitch: [left_shoulder_pitch_joint, right_shoulder_pitch_joint]
+
+# Held at a fixed angle [rad] during launch and flight
+fixed_like_paper:   # the paper also holds these
+  left_hip_roll_joint: 0.0
+  right_hip_roll_joint: 0.0
+  left_hip_yaw_joint: 0.0
+  right_hip_yaw_joint: 0.0
+  left_ankle_roll_joint: 0.0
+  right_ankle_roll_joint: 0.0
+
+fixed_h1_2_extra:   # H1-2 joints the paper's robot does not have in the same form
+  torso_joint: 0.0
+  left_shoulder_roll_joint: 0.0
+  right_shoulder_roll_joint: 0.0
+  left_shoulder_yaw_joint: 0.0
+  right_shoulder_yaw_joint: 0.0
+  left_elbow_joint: 0.0          # OPEN QUESTION: which angle? It changes arm inertia in flight
+  right_elbow_joint: 0.0
+  left_wrist_roll_joint: 0.0
+  right_wrist_roll_joint: 0.0
+  left_wrist_pitch_joint: 0.0
+  right_wrist_pitch_joint: 0.0
+  left_wrist_yaw_joint: 0.0
+  right_wrist_yaw_joint: 0.0

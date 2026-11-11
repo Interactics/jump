@@ -1,0 +1,14 @@
+# Robot model paths (relative to the workspace root).
+# setup.sh downloads h1_2_description from unitreerobotics/unitree_ros into third_party/.
+# URDF and MJCF come from the same package, so mass and inertia should match.
+
+robot: unitree_h1_2
+urdf: third_party/unitree_ros/robots/h1_2_description/h1_2_handless.urdf
+mjcf: third_party/unitree_ros/robots/h1_2_description/h1_2_handless.xml
+mesh_dir: third_party/unitree_ros/robots/h1_2_description/meshes
+
+# Phase 0 gate tolerances
+tolerance:
+  mass_kg: 0.01
+  com_m: 0.001       # 1 mm
+  cam_rel: 0.01      # 1 %

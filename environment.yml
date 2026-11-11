@@ -1,0 +1,20 @@
+# Packages this project adds to the existing conda env "mujoco".
+# Apply with:  conda env update -n mujoco -f environment.yml
+# (without --prune, so nothing already in the env is removed; mujoco and python stay as they are)
+#
+# Why conda-forge for pinocchio: only the conda-forge build ships the CasADi bindings
+# (pinocchio.casadi), which keep the robot dynamics differentiable inside the optimizer.
+# The pip wheel "pin" does not have them.
+
+name: mujoco
+channels:
+  - conda-forge
+dependencies:
+  - pinocchio>=3.0     # rigid-body dynamics + pinocchio.casadi
+  - casadi>=3.6        # direct collocation; IPOPT is included
+  - osqp               # QP solver for Stage 2
+  - proxsuite          # alternative QP solver (ProxQP)
+  - numpy
+  - scipy
+  - matplotlib
+  - pyyaml
