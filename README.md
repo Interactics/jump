@@ -53,3 +53,4 @@ humanoid_jump/
 | Robot model | Pinocchio (conda-forge, with `pinocchio.casadi`) |
 | Robot | MuJoCo, `h1_2_handless` (about 67 kg) |
 # jump
+# jump
