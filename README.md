@@ -22,6 +22,19 @@ python scripts/check_env.py
 
 The Phase 0 gate passes when all 12 checks pass. Pinocchio prints `Visual material must contain a name attribute` errors while it loads the URDF. They only concern visual meshes and are harmless.
 
+## Spawn the robot
+
+```bash
+conda activate mujoco
+mjpython scripts/spawn_robot.py            # viewer (macOS needs mjpython)
+mjpython scripts/spawn_robot.py --a 0.35   # deeper crouch: hip=-a, knee=2a, ankle=-a
+python scripts/spawn_robot.py --headless   # 5 s stand test, prints PASS/FAIL
+```
+
+The H1-2 spawns with both soles flat on the floor and holds the pose with joint PD
+(hips/knees/torso kp 1000, ankles 600, arms 100). Model fixes come from `h1_2_cop_cam_jump`:
+sole boxes instead of the foot mesh, no damping on the free joint, no self-collision.
+
 ## Layout
 
 ```
@@ -32,13 +45,15 @@ humanoid_jump/
 │   ├── robot.yaml           # model paths + Phase 0 tolerances
 │   └── joint_map.yaml       # H1-2 -> 7-DOF symmetric model mapping (draft)
 ├── scripts/
-│   └── check_env.py         # Phase 0 gate
+│   ├── check_env.py         # Phase 0 gate
+│   └── spawn_robot.py       # spawn H1-2 and hold a standing pose
 ├── toys/                    # Phase 1: collocation toy problems
 ├── humanoid_jump/           # Python package
 │   ├── collocation.py       # shared CasADi collocation helpers (Phase 1)
 │   ├── models/              # srmp.py (Stage 1), symmetric.py (Stage 3), full.py (Stage 2)
 │   ├── stages/              # stage1_srmp.py, stage2_qp.py, stage3_nlp.py
-│   └── sim/                 # mujoco_runner.py (Phase 5)
+│   └── sim/                 # robot.py (model + spawn + PD), mujoco_runner.py (Phase 5)
+├── assets/h1_2/             # H1-2 MJCF + scene + meshes (copied from h1_2_cop_cam_jump)
 ├── results/                 # plots, logs (git-ignored)
 └── third_party/             # downloaded H1-2 model (git-ignored)
 ```

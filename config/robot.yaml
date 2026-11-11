@@ -1,11 +1,13 @@
 # Robot model paths (relative to the workspace root).
 # setup.sh downloads h1_2_description from unitreerobotics/unitree_ros into third_party/.
-# URDF and MJCF come from the same package, so mass and inertia should match.
+# MJCF is a local copy of unitree_mujoco/unitree_robots/h1_2. It matches the URDF
+# (same mass, CoM and CAM; checked by scripts/check_env.py).
 
 robot: unitree_h1_2
 urdf: third_party/unitree_ros/robots/h1_2_description/h1_2_handless.urdf
-mjcf: third_party/unitree_ros/robots/h1_2_description/h1_2_handless.xml
-mesh_dir: third_party/unitree_ros/robots/h1_2_description/meshes
+mjcf: assets/h1_2/h1_2_handless.xml   # unitree_mujoco copy (identical to upstream)
+scene: assets/h1_2/scene.xml
+mesh_dir: assets/h1_2/meshes
 
 # Phase 0 gate tolerances
 tolerance:
