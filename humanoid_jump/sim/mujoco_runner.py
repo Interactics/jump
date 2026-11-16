@@ -1,11 +1,12 @@
-"""MuJoCo playback of the Stage 3 trajectory (launch + flight), then a plain PD hold. Phase 5, first step.
+"""MuJoCo execution of the Stage 3 trajectory: launch + flight playback, then the landing controller. Phase 5.
 
-Control: joint PD on the planned (q, dq) plus the planned joint torque as feedforward, on the four pitch
-joints per side; all other joints hold their spawn angle. No landing controller yet: after the planned
-touch-down time the robot just holds the last planned posture, so falling after landing is expected.
+Launch and flight: joint PD on the planned (q, dq) plus the planned joint torque as feedforward, on the four
+pitch joints per side; all other joints hold their spawn angle.
+Landing (from touch-down, detected from the ground force): sim/landing.py, the sister project's controller.
 
     python -m humanoid_jump.sim.mujoco_runner              # headless: numbers + results/playback.png
     python -m humanoid_jump.sim.mujoco_runner --no-ff      # PD only (the paper's position playback)
+    python -m humanoid_jump.sim.mujoco_runner --no-landing # hold the last posture instead of the landing controller
     mjpython -m humanoid_jump.sim.mujoco_runner --view     # viewer, quarter speed, loops
 """
 
@@ -19,6 +20,7 @@ import mujoco
 import numpy as np
 
 from humanoid_jump.models.symmetric import JOINTS, NQ, quantities
+from humanoid_jump.sim.landing import LandingController
 from humanoid_jump.sim.robot import ARMS, FEET, SOLE_Z, Robot, build_model
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,7 +39,11 @@ def load(path: Path = ROOT / "results" / "stage3_nlp.npz") -> dict:
                 L=np.array([float(m["L"]) for m in o]))
 
 
-def play(tr: dict, ff: bool = True, hold: float = 1.0, on_step=None, frames_at=()) -> dict:
+TD_FORCE = 80.0     # touch-down detection: total vertical ground force [N]
+
+
+def play(tr: dict, ff: bool = True, hold: float = 2.0, on_step=None, frames_at=(), landing: bool = True,
+         **land_kw) -> dict:
     r = Robot(build_model())
     m, d = r.m, r.d
     jid = lambda n: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, n)  # noqa: E731
@@ -68,14 +74,24 @@ def play(tr: dict, ff: bool = True, hold: float = 1.0, on_step=None, frames_at=(
         cam = mujoco.MjvCamera()
         cam.azimuth, cam.elevation, cam.distance = 90, -8, 3.4
 
-    log = {k: [] for k in ("t", "p", "v", "L", "pitch", "fz", "foot_x", "foot_pitch", "sat")}
+    lc = LandingController(r, **land_kw) if landing else None
+    landed, fz, tau_land = False, 0.0, np.zeros(m.nu)
+    log = {k: [] for k in ("t", "p", "v", "L", "pitch", "fz", "foot_x", "foot_pitch", "sat", "landed", "tau_frac")}
     frames_at = list(frames_at)
     n_steps = int((tr["t"][-1] + hold) / m.opt.timestep)
-    for _ in range(n_steps):
-        qd, dqd, taud = at(d.time)
-        for i in range(len(JOINTS)):
-            q_ref[idx[i]], dq_ref[idx[i]], tau_ff[idx[i]] = qd[3 + i], dqd[3 + i], taud[i] / 2 * ff
-        tau = tau_ff + r.kp * (q_ref - d.qpos[r.act_qpos]) + r.kd * (dq_ref - d.qvel[r.act_dof])
+    for step in range(n_steps):
+        if lc is not None and not landed and d.time > tr["T"] + 0.1 and fz > TD_FORCE:
+            landed = True
+            lc.start()
+        if landed:
+            if step % 2 == 0:                                                # 1 kHz, as in the sister project
+                tau_land = lc.torque(2 * m.opt.timestep)
+            tau = tau_land
+        else:
+            qd, dqd, taud = at(d.time)
+            for i in range(len(JOINTS)):
+                q_ref[idx[i]], dq_ref[idx[i]], tau_ff[idx[i]] = qd[3 + i], dqd[3 + i], taud[i] / 2 * ff
+            tau = tau_ff + r.kp * (q_ref - d.qpos[r.act_qpos]) + r.kd * (dq_ref - d.qvel[r.act_dof])
         d.ctrl[:] = np.clip(tau, -r.tau_max, r.tau_max)
         mujoco.mj_step(m, d)
         mujoco.mj_subtreeVel(m, d)
@@ -92,6 +108,7 @@ def play(tr: dict, ff: bool = True, hold: float = 1.0, on_step=None, frames_at=(
         log["foot_x"].append((d.xpos[r.foot_body["left"]] + Rf @ [0, 0, SOLE_Z])[0])
         log["foot_pitch"].append(np.arctan2(Rf[0, 2], Rf[2, 2]))
         log["sat"].append(np.any(np.abs(tau[np.ravel(idx)]) > r.tau_max[np.ravel(idx)]))
+        log["landed"].append(landed); log["tau_frac"].append(np.abs(d.ctrl[np.ravel(idx)] / r.tau_max[np.ravel(idx)]))
         if frames_at and d.time >= frames_at[0]:
             frames_at.pop(0)
             cam.lookat[:] = [d.subtree_com[1][0], 0, 0.75]
@@ -100,7 +117,7 @@ def play(tr: dict, ff: bool = True, hold: float = 1.0, on_step=None, frames_at=(
         if on_step is not None:
             on_step(d)
     out = {k: np.array(v) for k, v in log.items()}
-    out["frames"], out["pelvis_z"] = frames, float(d.qpos[2])
+    out["frames"], out["pelvis_z"], out["has_landing"] = frames, float(d.qpos[2]), landing
     return out
 
 
@@ -124,8 +141,12 @@ def summarize(tr: dict, lg: dict, tag: str) -> dict:
         line += (f"\n  touch-down at {t[k_td]:.3f} s (plan {tr['t'][-1]:.3f}) | ankle x {lg['foot_x'][k_td]:.3f} m (plan 0.400) | "
                  f"foot pitch {np.degrees(lg['foot_pitch'][k_td]):.1f} deg, pelvis pitch {np.degrees(lg['pitch'][k_td]):.1f} deg | "
                  f"impact peak Fz {lg['fz'][k_td:].max() / bw:.1f} BW | "
-                 f"after {t[-1] - t[k_td]:.2f} s of PD hold: pelvis z {lg['pelvis_z']:.2f} m "
-                 f"({'still up' if lg['pelvis_z'] > 0.6 else 'fell'}; no landing controller yet)")
+                 f"\n  {t[-1] - t[k_td]:.2f} s after touch-down ({'landing controller' if lg['has_landing'] else 'PD hold'}): "
+                 f"pelvis z {lg['pelvis_z']:.2f} m, pitch {np.degrees(lg['pitch'][-1]):.1f} deg, "
+                 f"CoM speed {np.linalg.norm(lg['v'][-1]):.3f} m/s, ankle x {lg['foot_x'][-1]:.3f} m "
+                 f"(moved {1e3 * (lg['foot_x'][-1] - lg['foot_x'][k_td]):+.0f} mm), CoM x - ankle x {lg['p'][-1, 0] - lg['foot_x'][-1]:+.3f} m")
+        res["upright"] = bool(lg["pelvis_z"] > 0.6 and abs(lg["pitch"][-1]) < 0.3 and np.linalg.norm(lg["v"][-1]) < 0.05)
+        line += f" -> {'STANDING' if res['upright'] else 'FELL'}"
     else:
         line += "\n  no flight phase detected" if not air.any() else "\n  no touch-down within the simulated time"
     print(line)
@@ -148,7 +169,7 @@ def plot(tr: dict, runs: dict, path: Path) -> None:
             a.plot(lg["t"], f(lg), label=f"sim, {tag}")
         a.plot(tr["t"], plan, "k--", label="plan")
         a.axvline(tr["T"], color="gray", lw=0.8); a.axvline(tr["t"][-1], color="gray", lw=0.8)
-        a.set_xlim(0, tr["t"][-1] + 0.4); a.set_title(title); a.set_xlabel("t [s]"); a.grid(alpha=0.3)
+        a.set_xlim(0, lg["t"][-1]); a.set_title(title); a.set_xlabel("t [s]"); a.grid(alpha=0.3)
         if i == 0:
             a.legend(fontsize=7)
     lg = next(iter(runs.values()))
@@ -172,12 +193,15 @@ if __name__ == "__main__":
                 if int(d.time / r0.m.opt.timestep) % 20 == 0:          # 100 fps of simulated time
                     viewer.sync(); time.sleep(0.01 * slow)
             while viewer.is_running():
-                play(tr, ff="--no-ff" not in sys.argv, on_step=show)
+                play(tr, ff="--no-ff" not in sys.argv, landing="--no-landing" not in sys.argv, on_step=show)
         sys.exit(0)
 
-    shots = list(np.linspace(0.0, tr["t"][-1] + 0.35, 9))
-    runs = {"PD + torque feedforward": play(tr, ff=True, frames_at=shots), "PD only": play(tr, ff=False)}
-    if "--no-ff" in sys.argv:
-        runs = {"PD only": play(tr, ff=False, frames_at=shots)}
+    shots = list(np.r_[np.linspace(0.0, tr["t"][-1], 6), tr["t"][-1] + np.array([0.15, 0.5, 1.9])])
+    ff, land = "--no-ff" not in sys.argv, "--no-landing" not in sys.argv
+    tag = ("PD + torque feedforward" if ff else "PD only") + (", landing controller" if land else ", PD hold")
+    runs = {tag: play(tr, ff=ff, landing=land, frames_at=shots)}
     res = {tag: summarize(tr, lg, tag) for tag, lg in runs.items()}
     plot(tr, runs, ROOT / "results" / "playback.png")
+    if land:
+        assert res[tag].get("upright"), "the robot did not end up standing"
+        print("Phase 5 gate: full jump without falling")
