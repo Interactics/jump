@@ -70,7 +70,9 @@ def _flight_out(Xs, L, t_f, ok=True, iters=0, ms=0.0):
                 th_end=Xs[0, -1], reach=reach, omega=L / Xs[1])
 
 
-def launch(h_jump: float, l_jump: float, joint: bool = False, th_tar: float = 0.0, t_max: float = 2.0) -> dict:
+def launch(h_jump: float, l_jump: float, joint: bool = False, th_tar: float = 0.0, t_max: float = 2.0,
+           land_offset: float | None = None) -> dict:
+    """land_offset = how far the foot lands ahead of the CoM [m]. None = the paper: mirror the take-off (Eq. 17)."""
     vz_exp = np.sqrt(2 * G * h_jump)
     t_f = 2 * vz_exp / G
     o = ca.Opti()
@@ -95,7 +97,11 @@ def launch(h_jump: float, l_jump: float, joint: bool = False, th_tar: float = 0.
         o.subject_to(o.bounded(-L_MAX, Q[k]["L"], L_MAX))
 
     e = Q[N_L]
-    o.subject_to(2 * e["p"][0] + e["v"][0] * t_f == l_jump)            # Eq. 17
+    if land_offset is None:
+        o.subject_to(2 * e["p"][0] + e["v"][0] * t_f == l_jump)        # Eq. 17
+    else:                                                              # Eq. 17 with a chosen landing offset
+        o.subject_to(e["p"][0] + e["v"][0] * t_f + land_offset == l_jump)
+        th_tar = X[0, N_L] - ca.atan2(land_offset, e["p"][1])          # landing leg angle = -atan(offset / height)
     o.subject_to(e["v"][1] == vz_exp)                                  # Eq. 18
     o.subject_to(e["a"] == ca.vertcat(0, -G))                          # Eq. 18: GRF = 0  <=>  F_l = tau_l - tau_pl = 0
     o.subject_to(e["Ld"] == 0)                                         # Eq. 19
@@ -123,7 +129,7 @@ def launch(h_jump: float, l_jump: float, joint: bool = False, th_tar: float = 0.
     mom = MASS * out["p"][:, 0] * (out["a"][:, 1] + G) - MASS * out["p"][:, 1] * out["a"][:, 0] - out["Ld"]
     cop = np.where(fz > 1.0, mom / np.maximum(fz, 1.0), np.nan)        # undefined once the foot unloads
     return dict(ok=ok, iters=iters, ms=ms, t=np.linspace(0, Ts, N_L + 1), T=Ts, X=Xs, U=val(U), fz=fz,
-                fx=MASS * out["a"][:, 0], cop=cop, t_f=t_f, vz_exp=vz_exp, h_jump=h_jump, l_jump=l_jump,
+                fx=MASS * out["a"][:, 0], cop=cop, t_f=t_f, vz_exp=vz_exp, h_jump=h_jump, l_jump=l_jump, land_offset=land_offset,
                 flight=_flight_out(val(XF), out["L"][-1], t_f) if joint else None, **out)
 
 

@@ -9,8 +9,9 @@ Differences from the paper (see CLAUDE.md, Phase 3):
     ponytail: no heel lift; add a toe-contact phase if flat-footed take-off limits the jump.
   * Joint torque limits, friction and CoP limits are constraints (the paper lists none of them).
   * Launch and flight are one NLP (the paper solves them one after the other).
-  * Landing: sole flat on the floor at the end of flight, at x = l, with the take-off CoM offset mirrored
-    (the paper's Eq. 56 mirrors the initial offset, which contradicts Eq. 17 and gives a shorter jump).
+  * Landing: sole flat on the floor at the end of flight, at x = l, foot LAND_OFFSET ahead of the CoM, and
+    Stage 1's distance equation uses the same offset. (The paper's Eq. 56 mirrors the initial offset, which
+    contradicts Eq. 17; mirroring the take-off as Eq. 17 assumes lands too far back on the heels.)
   * Flight acceleration cost (Eq. 54) covers the joints only: the base is in free fall, penalising it
     only adds a constant -g term that hurts conditioning.
 
@@ -33,6 +34,9 @@ from humanoid_jump.stages import stage1_srmp as s1
 
 ROOT = Path(__file__).resolve().parents[2]
 MU = 0.7
+# How far the foot lands ahead of the CoM [m]. The take-off mirror (0.134 m here) puts the capture point at the
+# heel: in MuJoCo the feet rock back 13-15 deg after touch-down. Sweep 0.09-0.12: 0.09 lands with the feet flat.
+LAND_OFFSET = 0.09
 BW = MASS * G
 # Table III (launch): W_rho, W_drho, W_v, W_ddq, W_u.  Table IV (flight): W_rho, W_drho, W_ddq, W_u, W_ankle
 WL = dict(rho=1e4, drho=0.1, v=np.array([1e7, 1e6]), ddq=0.2, u=1.0)
@@ -115,7 +119,9 @@ def solve(ref: dict, hard_cam: bool = True, guess: dict | None = None, max_iter:
         add("landing: joints at rest", XF[2 * NQ + 3:, NF] == 0)
         # Eq. 56 mirrors the *initial* CoM offset, but Eq. 17 (Stage 1) assumes the *take-off* offset is mirrored;
         # with Eq. 56 as written the jump is about 9 cm short. Mirror the take-off, and fix the distance itself.
-        add("landing: foot ahead of CoM", e["foot"][0] - e["p"][0] == Q[NL]["p"][0] - Q[NL]["foot"][0])
+        d_land = ref.get("land_offset")                                        # None = mirror the take-off
+        add("landing: foot ahead of CoM",
+            e["foot"][0] - e["p"][0] == (Q[NL]["p"][0] - Q[NL]["foot"][0] if d_land is None else d_land))
         add("landing: jump distance", e["foot"][0] == ref["l_jump"])
         add("landing: sole flat on floor", e["foot"][1:3] == 0)
     o.minimize(SCALE * J)
@@ -148,6 +154,11 @@ def solve(ref: dict, hard_cam: bool = True, guess: dict | None = None, max_iter:
                 la=la, fl=fo, tau_l=tau_l, tau_f=fo["tau"][:, 3:], cop=cop, ref=ref)
 
 
+def save(r: dict, path: Path) -> None:
+    path.parent.mkdir(exist_ok=True)
+    np.savez(path, t=r["t"], tF=r["tF"], X=r["X"], XF=r["XF"], Lam=r["Lam"], tau_l=r["tau_l"], tau_f=r["tau_f"])
+
+
 def report(r: dict) -> None:
     ref, la, fl = r["ref"], r["la"], r["fl"]
     print(f"[stage3] ok={r['ok']} iters {r['iters']} {r['ms'] / 1e3:.2f} s | {r['nx']} variables, {r['ng']} constraint rows")
@@ -162,7 +173,7 @@ def report(r: dict) -> None:
           f"rho {np.sqrt(np.mean((la['rho'] - ref['rho']) ** 2)):.2f} kg m^2 | "
           f"flight rho {np.sqrt(np.mean((fl['rho'] - ref['flight']['X'][1]) ** 2)):.2f} kg m^2 | "
           f"flight L drift {np.ptp(fl['L']):.1e}")
-    print(f"  landing: foot - CoM x = {fl['foot'][-1, 0] - fl['p'][-1, 0]:.3f} m (take-off mirror {la['p'][-1, 0] - la['foot'][-1, 0]:.3f}) | "
+    print(f"  landing: foot - CoM x = {fl['foot'][-1, 0] - fl['p'][-1, 0]:.3f} m (take-off offset {la['p'][-1, 0] - la['foot'][-1, 0]:.3f}) | "
           f"foot x {fl['foot'][-1, 0]:.3f} m = jump distance (target {ref['l_jump']}) | sole z, pitch {fl['foot'][-1, 1]:.1e}, {fl['foot'][-1, 2]:.1e} | "
           f"pelvis pitch {np.degrees(r['XF'][2, -1]):.1f} deg")
 
@@ -210,14 +221,14 @@ def plot(r: dict, path: Path) -> None:
 
 if __name__ == "__main__":
     h_jump, l_jump = (float(sys.argv[1]), float(sys.argv[2])) if len(sys.argv) > 2 else (0.10, 0.40)
-    ref = s1.launch(h_jump, l_jump, joint=True)
+    ref = s1.launch(h_jump, l_jump, joint=True, land_offset=LAND_OFFSET)
     assert ref["ok"]
+    print(f"[stage1] iters {ref['iters']} {ref['ms'] / 1e3:.2f} s | t_sl {ref['T']:.3f} s, t_f {ref['t_f']:.3f} s")
     r = solve(ref)
     report(r)
     for k, v in r["rows"].items():
         print(f"  {v:5d}  {k}")
     plot(r, ROOT / "results" / "stage3_nlp.png")
-    np.savez(ROOT / "results" / "stage3_nlp.npz", t=r["t"], tF=r["tF"], X=r["X"], XF=r["XF"], Lam=r["Lam"],
-             tau_l=r["tau_l"], tau_f=r["tau_f"])
+    save(r, ROOT / "results" / "stage3_nlp.npz")
     assert r["ok"], "Stage 3 did not converge"
     print("Phase 3 gate: converged")

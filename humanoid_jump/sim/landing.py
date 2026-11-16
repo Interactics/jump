@@ -1,6 +1,10 @@
 """Landing controller: thin wrapper around the sister project's T-RO re-implementation
 (../../h1_2_cop_cam_jump, used read-only): CoM PD -> wrench QP (friction, CoP in sole) -> IACVM foot-torque
 correction -> acceleration QP + inverse dynamics. Only the glue of its landing branch is repeated here.
+
+One gain differs from the sister project: the CoM PD in x is (20, 25) instead of (60, 18). The CoM touches down
+behind the feet with forward velocity; a stiff pull towards the foot centre drives the CoP to the heel and tips
+the feet back. Softer stiffness and more damping lets the forward momentum carry the CoM over the feet.
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ class _MujocoCompat:
 
 
 class LandingController:
-    def __init__(self, robot: Robot, z_land: float = 0.78, a_land: float = 0.6, kp=(60, 60, 80), kd=(18, 18, 22),
+    def __init__(self, robot: Robot, z_land: float = 0.78, a_land: float = 0.6, kp=(20, 60, 80), kd=(25, 18, 22),
                  k_L: float = 10.0, k_ori: float = 60.0, i_body: float = 8.0, kp_post: float = 100.0,
                  kp_ori: float = 100.0, x_offset: float = 0.0):
         sys.path.insert(0, str(SISTER))

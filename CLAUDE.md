@@ -30,22 +30,22 @@ Build order is **Stage 1 → Stage 3 → Stage 2** (Stage 2 only warm-starts Sta
 | 0 | Env, H1-2 model, joint map, spawn | `check_env.py` 12/12; robot stands | **Done** 2026-11-12: 12/12 (mass/CoM/CAM errors 0); stand 5 s: CoM drift 5.8 mm, tilt 0.6° |
 | 1 | CasADi collocation toys in `toys/` (cart-pole trapezoid, jerk input, two-phase hop) | Two-phase toy converges from a poor guess | **Done** 2026-11-12: 20/20 random guesses reach the same optimum (median 35 iters, 78 ms); 432 rows tallied |
 | 2 | Stage 1 SRMP TO (`models/srmp.py`, `stages/stage1_srmp.py`) | CoP in foot, inertia shaping in flight, landing angle hit | **Done** 2026-11-15 (joint mode, h 0.10 m, l 0.40 m, W_t = 5e7): 49 iters, 0.33 s; t_sl 0.844 s; CoP 0.008..0.048 m; ρ 7.0 → 6.1 in flight; landing angle −8.28° hit. Paper's sequential mode: flight infeasible |
-| 3 | Stage 3 symmetric NLP, naive guess first (baseline: time, iterations, success) | Converges for one target; baseline logged | **Done** 2026-11-16 (h 0.10 m, l 0.40 m, naive guess = hold the crouch): **982 iters, 44.6 s**, 2139 variables, 2809 rows; lands at 0.400 m; peak torque (L+R) hip 156/400, knee 241/600, ankle 58/120, shoulder 80/80 N·m; CoP 0.008..0.048 m. Stage 1 adds 0.33 s |
-| 4 | Stage 2 QP mapping + warm start | Yes/no with numbers: does it speed up Stage 3? (baseline to beat: 982 iters, 44.6 s) | Next |
-| 5 | MuJoCo execution; landing with own WBC | Full jump without falling | **Launch + flight playback done** 2026-11-16 (`sim/mujoco_runner.py`, PD + torque feedforward): take-off v (0.439, 1.404) vs plan (0.463, 1.401) m/s, apex 0.964 vs 0.967 m, touch-down 1.124 vs 1.129 s at ankle x 0.370 vs 0.400 m, foot pitch 0.9°. **Landing: in progress, not standing yet.** `sim/landing.py` wraps the sister project's controller (CoM PD → wrench QP → IACVM → acceleration QP; MuJoCo 3.9 shim for its `mj_fullM` call). First run, untuned: no fall at impact, but the pelvis pitches back to −42° within 0.3 s, the feet tilt and slide (foot pitch −10°, ankle x 0.37 → 0.31 m), and it falls after about 1 s. Touch-down state: CoM 0.12 m behind the ankle, v (+0.44, −1.35) m/s, pelvis −6°. `python -m humanoid_jump.sim.mujoco_runner` currently ends in an assertion error; `--no-landing` gives the playback-only run |
+| 3 | Stage 3 symmetric NLP, naive guess first (baseline: time, iterations, success) | Converges for one target; baseline logged | **Done** 2026-11-16, re-solved 2026-11-17 with landing offset 0.09 m (h 0.10 m, l 0.40 m, naive guess = hold the crouch): **603 iters, 26.9 s**, 2139 variables, 2809 rows; lands at 0.400 m; peak torque (L+R) hip 155/400, knee 243/600, ankle 60/120, shoulder 80/80 N·m; CoP 0.010..0.048 m. Stage 1 adds 0.54 s (90 iters). Iterations depend strongly on the landing offset: 0.134 (mirror) 982, 0.12 358, 0.11 700, 0.10 1442, 0.09 603; **0.07 and 0.048 do not converge in 3000** |
+| 4 | Stage 2 QP mapping + warm start | Yes/no with numbers: does it speed up Stage 3, and does it make it converge more reliably? (baseline: 603 iters, 26.9 s; spread 358–1442 and two failures over nearby offsets) | Next |
+| 5 | MuJoCo execution; landing with own WBC | Full jump without falling | **Done** 2026-11-17 for one target: `python -m humanoid_jump.sim.mujoco_runner` → STANDING. Take-off v (0.517, 1.403) vs plan (0.545, 1.401) m/s, apex 0.958 vs 0.961 m, touch-down 1.122 vs 1.127 s at ankle x 0.365 vs 0.400 m, impact 5.7 BW; 2 s later pelvis pitch 0.0°, CoM speed 0.015 m/s, feet moved 12 mm. Ground-truth state, no noise, one target only |
 | 6 | Evaluation: speed-up vs baseline, success rate, model-error robustness | One table + one figure | |
 
 Start with modest jump targets (0.3–0.5 m forward). H1-2 is about 67 kg (handless) with the same 360 N·m legs as H1, so the paper's 1.0 m is not a first target.
 
 ## What exists now (through Phase 3)
 
-One target runs end to end in optimization: **h = 0.10 m, l = 0.40 m**. Played back in MuJoCo up to touch-down (matches the plan); no landing controller yet, so the robot falls after landing.
+One target runs end to end in optimization: **h = 0.10 m, l = 0.40 m**. The full jump runs in MuJoCo: launch and flight playback, then the landing controller; the robot ends standing.
 
 1. `scripts/srmp_numbers.py` turns the H1-2 model into SRMP parameters (CoM height, pitch inertia, CoP limits).
-2. Stage 1 (`models/srmp.py`, `stages/stage1_srmp.py`): SRMP launch + flight in one NLP → references for CoM velocity, CAM rate, inertia, and the phase durations (t_sl 0.844 s, t_f 0.286 s). 49 iters, 0.33 s.
-3. Stage 3 (`models/symmetric.py`, `stages/stage3_nlp.py`): 7-DOF whole-body launch + flight in one NLP, from a naive guess → joint trajectory in `results/stage3_nlp.npz`. 982 iters, 44.6 s.
+2. Stage 1 (`models/srmp.py`, `stages/stage1_srmp.py`): SRMP launch + flight in one NLP → references for CoM velocity, CAM rate, inertia, and the phase durations (t_sl 0.841 s, t_f 0.286 s). 90 iters, 0.54 s (with the 0.09 m landing offset).
+3. Stage 3 (`models/symmetric.py`, `stages/stage3_nlp.py`): 7-DOF whole-body launch + flight in one NLP, from a naive guess → joint trajectory in `results/stage3_nlp.npz`. 603 iters, 26.9 s.
 
-4. Playback (`sim/mujoco_runner.py`): joint PD + planned torque feedforward in the full MuJoCo model; plot and snapshots in `results/playback.png`.
+4. Execution (`sim/mujoco_runner.py`): joint PD + planned torque feedforward in the full MuJoCo model for launch and flight; from touch-down `sim/landing.py`, a wrapper around the sister project's landing controller. Plot and snapshots in `results/playback.png`.
 
 Stage 2 (QP initial guess) is skipped so far by design: its only job is to speed up Stage 3, and the numbers above are the baseline it has to beat.
 
@@ -70,12 +70,14 @@ Three kinds: **(G)** the paper gives no information, so a choice was needed; **(
 | 13 | Limits in Stage 3 | "Boundary constraints", none listed | Joint torque limits, joint ranges, friction (μ 0.7), CoP, pelvis pitch ±1 rad | (R) H1-2's ankle is weak (120 N·m for both) |
 | 14 | Heel velocity cost (Eq. 46) | Weight 1.7e5 | Dropped | Follows from #12: the heel does not move |
 | 15 | Take-off | Only CoM velocity (Eq. 51) | Also ground wrench = 0 at the last launch node | (R) acceleration is a continuous state across the phase link (Eq. 55) |
-| 16 | Landing (Eq. 56) | Foot − CoM offset mirrors the **initial** posture | Foot lands at x = l, offset mirrors the **take-off**, sole flat on the floor | (E) Eq. 56 contradicts Eq. 17; as written a 0.40 m target gives 0.23–0.31 m |
+| 16 | Landing (Eq. 56) | Foot − CoM offset mirrors the **initial** posture; no distance or foot-height condition | Foot lands at x = l, sole flat on the floor, offset set by #22 | (E) Eq. 56 contradicts Eq. 17; as written a 0.40 m target gives 0.23–0.31 m |
 | 17 | Flight weights (Table IV) | ρ 0.1, ρ̇ 1e8, θ̈ 2e5, jerk 1, ankle 1e8 | ρ 0.1, ρ̇ 1e3, θ̈ 1 (joints only), jerk 1e-3, ankle 1e3 | (E) no convergence in 2000 iters with the paper's values on H1-2 |
 | 18 | Take-off node constraints | Not discussed | Duplicated dynamics and inequalities on the zero wrench removed | (E) otherwise the constraints are degenerate and IPOPT does not converge |
 | 19 | Scaling | Not discussed | Forces in body weights, objective × 1e-4 (Stage 1) and × 1e-6 (Stage 3) | (R) IPOPT needs it with weights up to 1e8 |
 | 20 | Stage 2 | QP guess feeds Stage 3 | Not built yet; Stage 3 starts from "hold the crouch" | (R) build order: baseline first |
 | 21 | Execution of launch + flight | Open-loop joint position playback | Joint PD + planned torque as feedforward | (E) position-only playback overshoots take-off vz by 28 % in MuJoCo (1.80 vs 1.40 m/s) |
+| 22 | Landing posture | Foot ahead of the CoM by the initial offset (Eq. 56) or, per Eq. 17, the take-off offset | `LAND_OFFSET = 0.09 m`, used in both Stage 1 (distance and landing angle) and Stage 3 | (E) the take-off mirror (0.134 m) lands on the heels: feet rock back 13–15° in MuJoCo. Found by a sweep, not derived |
+| 23 | Landing controller | [2]'s online WBC | Sister project's re-implementation of [2], CoM PD in x softened from (60, 18) to (20, 25) | (R) [2] is a vertical jump; with forward speed the stiff pull drives the CoP to the heel |
 
 Used as printed: Table I except W_t; Table III (launch, minus the heel term); jerk as the input in both stages; the hard CAM constraint (Eq. 47); soft tracking of CoM velocity and inertia; hard take-off velocity.
 
@@ -85,7 +87,7 @@ Findings about the paper so far (candidates for the report):
 - The launch duration is not determined by the published cost (#7).
 - The inertia reference is not followed by the whole body: Stage 3 tracks L exactly but ρ is 11.1 vs 7.0 at take-off (arms swing up). The backward L that Stage 1 asks for comes from the SRMP's massless leg; a real robot can also swing its legs forward.
 - Eqs. 17 and 56 disagree on the landing posture (#16).
-- The "under 10 s" claim has no baseline. Ours from a naive guess: 44.6 s (982 iters) on a newer CPU than the paper's i5-9400F, so hardware does not explain the gap; the initial guess, the solver and the extra limits (#13) do. Phase 4 measures the first of these.
+- The "under 10 s" claim has no baseline. Ours from a naive guess: 26.9 s (603 iters; 17–62 s over nearby landing offsets) on a newer CPU than the paper's i5-9400F, so hardware does not explain the gap; the initial guess, the solver and the extra limits (#13) do. Phase 4 measures the first of these.
 
 ## Environment and commands
 
@@ -121,7 +123,7 @@ third_party/             unitree_ros h1_2_description (URDF for Pinocchio), git-
 results/                 plots and logs
 ```
 
-`collocation.py` has `trapezoid` (defect rows), `trapz_cost`, `solve`. `models/srmp.py` (Lagrangian SRMP, self-check: `python -m humanoid_jump.models.srmp`) and `stages/stage1_srmp.py` (`launch(h, l, joint=...)`, `flight(la)`; run `python -m humanoid_jump.stages.stage1_srmp [h l]`, plot in `results/stage1_srmp.png`) are done. `models/symmetric.py` (7-DOF planar model from the URDF via Pinocchio, planar root + left = right matrix `S`; self-check against MuJoCo: `python -m humanoid_jump.models.symmetric`) and `stages/stage3_nlp.py` (`solve(ref, hard_cam=..., guess=...)`; run `python -m humanoid_jump.stages.stage3_nlp [h l]`; plot `results/stage3_nlp.png`, trajectory `results/stage3_nlp.npz`) are done. `sim/mujoco_runner.py` plays `results/stage3_nlp.npz` back (`python -m humanoid_jump.sim.mujoco_runner [--no-ff]`, viewer: `mjpython -m humanoid_jump.sim.mujoco_runner --view`). `models/full.py` and `stages/stage2_qp.py` are still docstring-only placeholders.
+`collocation.py` has `trapezoid` (defect rows), `trapz_cost`, `solve`. `models/srmp.py` (Lagrangian SRMP, self-check: `python -m humanoid_jump.models.srmp`) and `stages/stage1_srmp.py` (`launch(h, l, joint=...)`, `flight(la)`; run `python -m humanoid_jump.stages.stage1_srmp [h l]`, plot in `results/stage1_srmp.png`) are done. `models/symmetric.py` (7-DOF planar model from the URDF via Pinocchio, planar root + left = right matrix `S`; self-check against MuJoCo: `python -m humanoid_jump.models.symmetric`) and `stages/stage3_nlp.py` (`solve(ref, hard_cam=..., guess=...)`; run `python -m humanoid_jump.stages.stage3_nlp [h l]`; plot `results/stage3_nlp.png`, trajectory `results/stage3_nlp.npz`) are done. `sim/mujoco_runner.py` executes `results/stage3_nlp.npz` (`python -m humanoid_jump.sim.mujoco_runner [--no-ff] [--no-landing]`, ends with the Phase 5 gate; viewer: `mjpython -m humanoid_jump.sim.mujoco_runner --view`). `models/full.py` and `stages/stage2_qp.py` are still docstring-only placeholders.
 
 **Solve time is a tracked result**: every stage prints iterations and wall time; record them here whenever a formulation changes.
 
@@ -157,6 +159,10 @@ Toys: `python toys/<name>.py`, each ends with an assert self-check.
 - Stage 3 uses a flat foot in launch (no heel lift) and position-level sole constraints; the sole velocity residual is up to 1.3e-2 m/s between nodes. Check this in Phase 5 playback.
 - **Playback needs the torque feedforward.** PD + planned torque: take-off vz 1.404 (plan 1.401), L −6.29 (plan −6.48), apex within 3 mm. PD only (the paper's position playback, same stiff gains): vz 1.80, apex 4 cm too high, lands 70 ms late, L −4.5. No torque saturation in either run.
 - Remaining playback error with feedforward: lift-off 23 ms early, vx 0.024 m/s low, lands 3 cm short. The flat-foot Stage 3 with N = 40/30 nodes is good enough for this target; no need to refine the grid yet.
+- **Landing offset decides whether the landing is clean.** Foot ahead of the CoM at touch-down, with the soft x gains: 0.134 m (take-off mirror) stands but the feet rock back 13–15° and slide 25–50 mm; 0.12 and 0.11 rock 7°; 0.10 and 0.09 stay flat (±1°, slide about 10 mm). Reason: the CoM lands behind the heel, so the vertical impact adds backward angular momentum and brakes the forward speed; the capture point ends up at the heel. Stage 1's backward L (−6) makes it worse.
+- **Landing CoM gains in x: (20, 25), not the sister project's (60, 18).** With (60, 18) the mirrored landing falls (pelvis −42°, impact 12.5 BW). kd_x = 40 also falls. A reference shifted back by 4–8 cm has a similar effect to the softer gain.
+- The sister project's code targets MuJoCo 4 (`mj_fullM(m, d, M)`); this env has 3.9. `sim/landing.py` patches the call at runtime only; the sister project is untouched.
+- Stage 3's convergence is fragile in the landing offset (358 to 1442 iters, failures at 0.07 and 0.048). A better initial guess (Phase 4) should be judged on reliability too, not only on speed.
 - Comparing Pinocchio and MuJoCo: map joints by name, not by index; keep base velocity at zero when comparing CAM, to avoid frame-convention mismatches.
 
 ## How to work with me
