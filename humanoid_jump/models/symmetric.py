@@ -92,10 +92,23 @@ def _build():
     Jf = ca.jacobian(foot, q)                                    # lambda = (Fx, Fz, My about that point)
     out = dict(p=p, v=v, a=a, rho=rho, drho=ca.jacobian(rho, q) @ dq, L=L, Ld=Ld, tau=tau, foot=foot, Jf=Jf,
                dfoot=Jf @ dq, toe=sole(FOOT_X[1]), heel=sole(FOOT_X[0]))
-    return ca.Function("sym7", [q, dq, ddq], list(out.values()), ["q", "dq", "ddq"], list(out))
+    quant = ca.Function("sym7", [q, dq, ddq], list(out.values()), ["q", "dq", "ddq"], list(out))
+
+    # Everything Stage 2's QP needs is affine in ddq: e = J(q, dq) ddq + e0(q, dq)
+    def affine(e):
+        return ca.jacobian(e, ddq), ca.substitute(e, ddq, ca.SX.zeros(NQ))
+
+    rel = foot - ca.vertcat(p, 0)                                # sole point relative to the CoM (x, z, pitch)
+    drel = ca.jacobian(rel, q) @ dq
+    lin = dict(p=p, v=v, L=L, rho=rho, drho=out["drho"], foot=foot, dfoot=out["dfoot"], rel=rel, drel=drel)
+    for name, e in (("tau", tau), ("a", a), ("Ld", Ld), ("ddrho", ddt(out["drho"])), ("ddfoot", ddt(out["dfoot"])),
+                    ("ddrel", ddt(drel))):
+        lin["J_" + name], lin[name + "0"] = affine(e)
+    linear = ca.Function("sym7_lin", [q, dq], list(lin.values()), ["q", "dq"], list(lin))
+    return quant, linear
 
 
-quantities = _build()
+quantities, linear_terms = _build()
 
 
 def q_of(x):

@@ -43,8 +43,8 @@ TD_FORCE = 80.0     # touch-down detection: total vertical ground force [N]
 
 
 def play(tr: dict, ff: bool = True, hold: float = 2.0, on_step=None, frames_at=(), landing: bool = True,
-         **land_kw) -> dict:
-    r = Robot(build_model())
+         model: mujoco.MjModel | None = None, **land_kw) -> dict:
+    r = Robot(model if model is not None else build_model())             # model: e.g. a perturbed one (Phase 6)
     m, d = r.m, r.d
     jid = lambda n: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, n)  # noqa: E731
     act = {n: i for i, n in enumerate(r.act_names)}
@@ -138,14 +138,20 @@ def summarize(tr: dict, lg: dict, tag: str) -> dict:
     line = f"  launch peak Fz {lg['fz'][:k_to].max() / bw:.2f} BW | CoM apex {res['apex']:.3f} m (plan {apex_plan:.3f}) | torque saturated in {100 * lg['sat'][:k_to].mean():.0f} % of launch steps"
     if k_td is not None:
         res["td"] = (t[k_td], lg["foot_x"][k_td])
-        line += (f"\n  touch-down at {t[k_td]:.3f} s (plan {tr['t'][-1]:.3f}) | ankle x {lg['foot_x'][k_td]:.3f} m (plan 0.400) | "
+        res["impact"] = lg["fz"][k_td:].max() / bw
+        line += (f"\n  touch-down at {t[k_td]:.3f} s (plan {tr['t'][-1]:.3f}) | ankle x {lg['foot_x'][k_td]:.3f} m (plan {tr.get('l', 0.4):.3f}) | "
                  f"foot pitch {np.degrees(lg['foot_pitch'][k_td]):.1f} deg, pelvis pitch {np.degrees(lg['pitch'][k_td]):.1f} deg | "
                  f"impact peak Fz {lg['fz'][k_td:].max() / bw:.1f} BW | "
                  f"\n  {t[-1] - t[k_td]:.2f} s after touch-down ({'landing controller' if lg['has_landing'] else 'PD hold'}): "
                  f"pelvis z {lg['pelvis_z']:.2f} m, pitch {np.degrees(lg['pitch'][-1]):.1f} deg, "
                  f"CoM speed {np.linalg.norm(lg['v'][-1]):.3f} m/s, ankle x {lg['foot_x'][-1]:.3f} m "
                  f"(moved {1e3 * (lg['foot_x'][-1] - lg['foot_x'][k_td]):+.0f} mm), CoM x - ankle x {lg['p'][-1, 0] - lg['foot_x'][-1]:+.3f} m")
-        res["upright"] = bool(lg["pelvis_z"] > 0.6 and abs(lg["pitch"][-1]) < 0.3 and np.linalg.norm(lg["v"][-1]) < 0.05)
+        # CoM over the foot too: a stumble can end at standing height with one foot 0.6 m ahead (Phase 6, h 0.05 l 0.4)
+        # Mean CoM speed over the last 0.5 s, not the last sample: some landings keep a residual sway (peaks 0.09 m/s)
+        # while the feet do not move (Phase 6, h 0.2 l 0.4).
+        sway = np.linalg.norm(lg["v"][t > t[-1] - 0.5], axis=1).mean()
+        res["upright"] = bool(lg["pelvis_z"] > 0.6 and abs(lg["pitch"][-1]) < 0.3 and sway < 0.05
+                              and abs(lg["p"][-1, 0] - lg["foot_x"][-1]) < 0.1)
         line += f" -> {'STANDING' if res['upright'] else 'FELL'}"
     else:
         line += "\n  no flight phase detected" if not air.any() else "\n  no touch-down within the simulated time"

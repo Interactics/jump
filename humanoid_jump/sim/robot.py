@@ -42,7 +42,7 @@ def leg_pose(a: float) -> dict[str, float]:
     return q
 
 
-def build_model(scene: Path | str = DEFAULT_SCENE, timestep: float = 0.0005) -> mujoco.MjModel:
+def build_model(scene: Path | str = DEFAULT_SCENE, timestep: float = 0.0005, box: tuple | None = None) -> mujoco.MjModel:
     spec = mujoco.MjSpec.from_file(str(Path(scene).resolve()))
     spec.option.timestep = timestep
     spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
@@ -70,6 +70,14 @@ def build_model(scene: Path | str = DEFAULT_SCENE, timestep: float = 0.0005) -> 
     for g in spec.geoms:
         if g.name not in ("floor", "left_sole", "right_sole") and g.contype:
             g.contype = g.conaffinity = 0
+
+    if box:  # (height, front edge x): a 0.75 m deep, 1 m wide box to jump onto (Dai 2014 baseline)
+        g = spec.worldbody.add_geom()
+        g.name, g.type = "box", mujoco.mjtGeom.mjGEOM_BOX
+        g.size = [0.375, 0.5, box[0] / 2]
+        g.pos = [box[1] + 0.375, 0.0, box[0] / 2]
+        g.rgba = [0.72, 0.55, 0.36, 1.0]
+        g.friction = [1.0, 0.02, 0.001]
 
     for tex in spec.textures:  # light sky so the dark robot is visible
         if tex.type == mujoco.mjtTexture.mjTEXTURE_SKYBOX:

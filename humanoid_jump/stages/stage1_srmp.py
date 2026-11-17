@@ -71,10 +71,13 @@ def _flight_out(Xs, L, t_f, ok=True, iters=0, ms=0.0):
 
 
 def launch(h_jump: float, l_jump: float, joint: bool = False, th_tar: float = 0.0, t_max: float = 2.0,
-           land_offset: float | None = None) -> dict:
-    """land_offset = how far the foot lands ahead of the CoM [m]. None = the paper: mirror the take-off (Eq. 17)."""
+           land_offset: float | None = None, box: tuple | None = None) -> dict:
+    """land_offset = how far the foot lands ahead of the CoM [m]. None = the paper: mirror the take-off (Eq. 17).
+    box = (height, front edge x) to land on, or None (the paper: flat ground). NOT in the paper (user extension)."""
     vz_exp = np.sqrt(2 * G * h_jump)
-    t_f = 2 * vz_exp / G
+    box_h = box[0] if box else 0.0
+    assert box_h < h_jump, "the CoM apex must be above the box top"
+    t_f = (vz_exp + np.sqrt(vz_exp**2 - 2 * G * box_h)) / G   # CoM lands box_h higher; = 2 vz / g on flat ground
     o = ca.Opti()
     X, U, T = o.variable(12, N_L + 1), o.variable(4, N_L + 1), o.variable()
     trapezoid(o, lambda x, u: ca.vertcat(x[4:12], u), X, U, T / N_L)
@@ -130,7 +133,7 @@ def launch(h_jump: float, l_jump: float, joint: bool = False, th_tar: float = 0.
     cop = np.where(fz > 1.0, mom / np.maximum(fz, 1.0), np.nan)        # undefined once the foot unloads
     return dict(ok=ok, iters=iters, ms=ms, t=np.linspace(0, Ts, N_L + 1), T=Ts, X=Xs, U=val(U), fz=fz,
                 fx=MASS * out["a"][:, 0], cop=cop, t_f=t_f, vz_exp=vz_exp, h_jump=h_jump, l_jump=l_jump, land_offset=land_offset,
-                flight=_flight_out(val(XF), out["L"][-1], t_f) if joint else None, **out)
+                box=box, flight=_flight_out(val(XF), out["L"][-1], t_f) if joint else None, **out)
 
 
 def flight(la: dict, th_tar: float = 0.0) -> dict:

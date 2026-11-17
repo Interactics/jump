@@ -15,7 +15,9 @@ Differences from the paper (see CLAUDE.md, Phase 3):
   * Flight acceleration cost (Eq. 54) covers the joints only: the base is in free fall, penalising it
     only adds a constant -g term that hurts conditioning.
 
-    python -m humanoid_jump.stages.stage3_nlp              # h = 0.10 m, l = 0.40 m, naive initial guess
+    python -m humanoid_jump.stages.stage3_nlp              # h = 0.10 m, l = 0.40 m, Stage 2 guess (naive if that fails)
+    python -m humanoid_jump.stages.stage3_nlp --naive      # naive initial guess only (the Phase 3 baseline)
+    python -m humanoid_jump.stages.stage3_nlp 0.2 0.5 --box   # onto a 0.10 m box (not in the paper) -> stage3_box.npz
 """
 
 from __future__ import annotations
@@ -34,6 +36,9 @@ from humanoid_jump.stages import stage1_srmp as s1
 
 ROOT = Path(__file__).resolve().parents[2]
 MU = 0.7
+# IPOPT options for starting from a good guess: by default IPOPT pushes the start point away from the bounds
+# (bound_push 1e-2) and begins with a large barrier (mu_init 0.1), which throws a warm start away.
+WARM = dict(mu_init=1e-3, bound_push=1e-6, bound_frac=1e-6, slack_bound_push=1e-6, slack_bound_frac=1e-6)
 # How far the foot lands ahead of the CoM [m]. The take-off mirror (0.134 m here) puts the capture point at the
 # heel: in MuJoCo the feet rock back 13-15 deg after touch-down. Sweep 0.09-0.12: 0.09 lands with the feet flat.
 LAND_OFFSET = 0.09
@@ -45,6 +50,15 @@ WL = dict(rho=1e4, drho=0.1, v=np.array([1e7, 1e6]), ddq=0.2, u=1.0)
 # Same ordering kept (drho, ankle >> ddq >> u), range compressed.
 WF = dict(rho=0.1, drho=1e3, ddq=1.0, u=1e-3, ankle=1e3)
 SCALE = 1e-6
+# NOT part of the paper, off by default (the pipeline follows the paper). Kept only as a recorded finding:
+# variable scaling (jerk in launch, flight; q, dq, ddq scaled by 1, 10, 100) took Stage 3 from 7/11 to 11/11 targets
+# in about 18 iters. Opt in with solve(..., xscale=XSCALE); scripts/bench_warmstart.py uses it for the comparison.
+XSCALE = (1e3, 1e4)
+# Box landing, NOT in the paper (user extension, off unless Stage 1 got box=...). BOX = (height, front edge x) [m];
+# the edge sits 6 cm behind the heel for the ankle landing at x = 0.50. Smooth step: 1 cm wide, 2 cm before the edge.
+# With h 0.2: l 0.5 converges (445 iters); l 0.4 (edge 0.25) is infeasible: the toe passes the edge 6 cm after
+# take-off, before the foot can rise 0.1 m; l 0.6 (edge 0.45) hits 1500 iters.
+BOX, BOX_W, BOX_MARGIN = (0.10, 0.35), 0.01, 0.02
 KEYS = ("p", "v", "a", "rho", "drho", "L", "Ld", "tau", "foot", "dfoot", "toe", "heel")
 
 
@@ -53,7 +67,8 @@ def _integrator(x, u):
 
 
 def solve(ref: dict, hard_cam: bool = True, guess: dict | None = None, max_iter: int = 3000, verbose: int = 0,
-          flight: bool = True, foot_level: str = "pos", skip: tuple = ()) -> dict:
+          flight: bool = True, foot_level: str = "pos", skip: tuple = (), ipopt: dict | None = None,
+          xscale: tuple | None = None) -> dict:
     """ref = Stage 1 result (joint mode). guess = dict(X, U, Lam, XF, UF) or None for the naive guess."""
     NL, NF = len(ref["t"]) - 1, len(ref["flight"]["t"]) - 1
     T, t_f = ref["T"], ref["t_f"]
@@ -100,6 +115,7 @@ def solve(ref: dict, hard_cam: bool = True, guess: dict | None = None, max_iter:
 
     fl = ref["flight"]
     drho_f = fl["X"][2]
+    box = ref.get("box")                                                      # (height, front edge x) or None
     if flight:
         add("phase link", XF[:, 0] == X[:, NL])                                   # Eq. 55
         for k in range(NF + 1):                                                   # ---------------- flight
@@ -109,8 +125,11 @@ def solve(ref: dict, hard_cam: bool = True, guess: dict | None = None, max_iter:
             add("pelvis pitch", o.bounded(-1.0, XF[2, k], 1.0))
             add("flight torque limits", o.bounded(-TAU_MAX / BW, m["tau"][3:7] / BW, TAU_MAX / BW))
             add("joint ranges", o.bounded(Q_MIN, XF[3:7, k], Q_MAX))
-            if k < NF:
+            if k < NF and not box:
                 add("foot above floor", ca.vertcat(m["toe"][1], m["heel"][1]) >= 0)
+            elif k < NF:      # smooth step at the box edge instead of a collision check, as in dai2014.py
+                for p in (m["toe"], m["heel"]):
+                    add("foot above floor / box", p[1] >= box[0] * 0.5 * (1 + ca.tanh((p[0] - box[1] + BOX_MARGIN) / BOX_W)))
             J += (WF["rho"] * (m["rho"] - fl["X"][1][k]) ** 2 + WF["drho"] * (m["drho"] - drho_f[k]) ** 2   # Eq. 53
                   + WF["ddq"] * ca.sumsqr(XF[2 * NQ + 3:, k]) + WF["u"] * ca.sumsqr(UF[:, k])
                   + WF["ankle"] * XF[NQ + 5, k] ** 2)                             # Eq. 54
@@ -123,8 +142,12 @@ def solve(ref: dict, hard_cam: bool = True, guess: dict | None = None, max_iter:
         add("landing: foot ahead of CoM",
             e["foot"][0] - e["p"][0] == (Q[NL]["p"][0] - Q[NL]["foot"][0] if d_land is None else d_land))
         add("landing: jump distance", e["foot"][0] == ref["l_jump"])
-        add("landing: sole flat on floor", e["foot"][1:3] == 0)
+        add("landing: sole flat on floor", e["foot"][1:3] == ca.vertcat(box[0] if box else 0.0, 0.0))
     o.minimize(SCALE * J)
+    if xscale:    # typical magnitudes: q ~1, dq ~10, ddq ~100, jerk ~1e3 (launch) / 1e4 (flight)
+        sx = np.r_[np.ones(NQ), 10 * np.ones(NQ), 100 * np.ones(NQ)]
+        o.set_linear_scale(X, np.tile(sx[:, None], NL + 1)); o.set_linear_scale(XF, np.tile(sx[:, None], NF + 1))
+        o.set_linear_scale(U, xscale[0] * np.ones((NQ, NL + 1))); o.set_linear_scale(UF, xscale[1] * np.ones((NQ, NF + 1)))
 
     if guess is None:                                                         # naive: hold the crouch
         o.set_initial(X, np.tile(x0[:, None], NL + 1))
@@ -134,7 +157,7 @@ def solve(ref: dict, hard_cam: bool = True, guess: dict | None = None, max_iter:
         for V, n in ((X, "X"), (U, "U"), (Lam, "Lam"), (XF, "XF"), (UF, "UF")):
             o.set_initial(V, guess[n])
 
-    o.solver("ipopt", {"print_time": False, "expand": True}, {"print_level": verbose, "sb": "yes", "max_iter": max_iter})
+    o.solver("ipopt", {"print_time": False, "expand": True}, {"print_level": verbose, "sb": "yes", "max_iter": max_iter, **(ipopt or {})})
     t0 = time.perf_counter()
     try:
         val, ok = o.solve().value, True
@@ -149,7 +172,8 @@ def solve(ref: dict, hard_cam: bool = True, guess: dict | None = None, max_iter:
     Xs, Ls = val(X), val(Lam) * BW                                            # back to N and N m
     tau_l = np.array([np.ravel(val(Q[k]["tau"] - BW * Q[k]["Jf"].T @ Lam[:, k]))[3:] for k in range(NL + 1)])
     cop = np.where(Ls[1] > 1.0, -Ls[2] / np.maximum(Ls[1], 1.0), np.nan)
-    return dict(ok=ok, iters=o.stats()["iter_count"], ms=ms, nx=o.nx, ng=o.ng, rows=rows, T=T, t_f=t_f,
+    return dict(ok=ok, status=o.stats()["return_status"], iters=o.stats()["iter_count"], ms=ms, nx=o.nx, ng=o.ng,
+                cost=float(val(o.f)), rows=rows, T=T, t_f=t_f,
                 t=ref["t"], tF=T + fl["t"], X=Xs, U=val(U), Lam=Ls, XF=val(XF), UF=val(UF),
                 la=la, fl=fo, tau_l=tau_l, tau_f=fo["tau"][:, 3:], cop=cop, ref=ref)
 
@@ -161,7 +185,7 @@ def save(r: dict, path: Path) -> None:
 
 def report(r: dict) -> None:
     ref, la, fl = r["ref"], r["la"], r["fl"]
-    print(f"[stage3] ok={r['ok']} iters {r['iters']} {r['ms'] / 1e3:.2f} s | {r['nx']} variables, {r['ng']} constraint rows")
+    print(f"[stage3] ok={r['ok']} ({r['status']}) iters {r['iters']} {r['ms'] / 1e3:.2f} s | {r['nx']} variables, {r['ng']} constraint rows")
     tmax = np.abs(np.vstack([r["tau_l"], r["tau_f"]])).max(axis=0)
     print("  peak torque / limit (L+R sum): " + ", ".join(
         f"{n} {t:.0f}/{m:.0f}" for n, t, m in zip(("hip", "knee", "ankle", "shoulder"), tmax, TAU_MAX)))
@@ -220,15 +244,30 @@ def plot(r: dict, path: Path) -> None:
 
 
 if __name__ == "__main__":
-    h_jump, l_jump = (float(sys.argv[1]), float(sys.argv[2])) if len(sys.argv) > 2 else (0.10, 0.40)
-    ref = s1.launch(h_jump, l_jump, joint=True, land_offset=LAND_OFFSET)
+    from humanoid_jump.stages import stage2_qp as s2
+
+    nums = [float(a) for a in sys.argv[1:] if not a.startswith("--")]
+    h_jump, l_jump = nums if len(nums) == 2 else (0.10, 0.40)
+    box = BOX if "--box" in sys.argv else None                                # e.g. 0.2 0.5 --box -> stage3_box.npz
+    ref = s1.launch(h_jump, l_jump, joint=True, land_offset=LAND_OFFSET, box=box)
     assert ref["ok"]
     print(f"[stage1] iters {ref['iters']} {ref['ms'] / 1e3:.2f} s | t_sl {ref['T']:.3f} s, t_f {ref['t_f']:.3f} s")
-    r = solve(ref)
+    total, r = ref["ms"], None
+    if "--naive" not in sys.argv:
+        g = s2.solve(ref)
+        r = solve(ref, guess=g, ipopt=WARM, max_iter=1500)
+        total += g["ms"] + r["ms"]
+        print(f"[stage2] {g['ms'] / 1e3:.2f} s | Stage 3 from the Stage 2 guess: {r['status']}, {r['iters']} iters, {r['ms'] / 1e3:.1f} s")
+    if r is None or not r["ok"]:
+        r = solve(ref)
+        total += r["ms"]
+        print(f"Stage 3 from the naive guess: {r['status']}, {r['iters']} iters, {r['ms'] / 1e3:.1f} s")
     report(r)
+    print(f"Total optimization time: {total / 1e3:.1f} s")
     for k, v in r["rows"].items():
         print(f"  {v:5d}  {k}")
-    plot(r, ROOT / "results" / "stage3_nlp.png")
-    save(r, ROOT / "results" / "stage3_nlp.npz")
+    name = "stage3_box" if box else "stage3_nlp"
+    plot(r, ROOT / "results" / f"{name}.png")
+    save(r, ROOT / "results" / f"{name}.npz")
     assert r["ok"], "Stage 3 did not converge"
     print("Phase 3 gate: converged")

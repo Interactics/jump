@@ -5,6 +5,17 @@ correction -> acceleration QP + inverse dynamics. Only the glue of its landing b
 One gain differs from the sister project: the CoM PD in x is (20, 25) instead of (60, 18). The CoM touches down
 behind the feet with forward velocity; a stiff pull towards the foot centre drives the CoP to the heel and tips
 the feet back. Softer stiffness and more damping lets the forward momentum carry the CoM over the feet.
+
+Second difference: IACVM also acts on foot roll, with the opposite sign and gain 0.7 (iacvm_roll = -0.7).
+- Why: the sister project uses pitch only (--iacvm_pitch_only 1). Then, after harder landings (h 0.2 l 0.4/0.5,
+  h 0.15 l 0.5, box), both feet keep rocking in roll (±12 deg std, ankle roll τ ±20 N·m, sole Fz 0.5-2.3 BW) and it
+  never decays. After h 0.1 l 0.2 the feet stay rolled 30 deg.
+- Sweep over 7 landings plus 3 model errors (trunk +5 kg, mass +10 %, friction 0.5): every gain from -0.3 to -1
+  stops the rocking, and the feet end flat.
+- -0.7 is the only gain that loses no case that stood before. Each other gain loses one marginal case:
+  -0.3, -0.8 and -1 lose h 0.2 l 0.6; -0.5 loses trunk +5 kg. Those two landings flip with small changes.
+- +1 leaves the feet at ±20 deg or falls. Flipping pitch to -1 makes every case fall.
+- The sign and the gain come from these tests, not from a derivation.
 """
 
 from __future__ import annotations
@@ -38,7 +49,7 @@ class _MujocoCompat:
 class LandingController:
     def __init__(self, robot: Robot, z_land: float = 0.78, a_land: float = 0.6, kp=(20, 60, 80), kd=(25, 18, 22),
                  k_L: float = 10.0, k_ori: float = 60.0, i_body: float = 8.0, kp_post: float = 100.0,
-                 kp_ori: float = 100.0, x_offset: float = 0.0):
+                 kp_ori: float = 100.0, x_offset: float = 0.0, iacvm_roll: float = -0.7):
         sys.path.insert(0, str(SISTER))
         import h1_2_jump.cdc as cdc
         from h1_2_jump.cdc import AccelQP, WrenchQP
@@ -59,7 +70,7 @@ class LandingController:
         for n, v in {**leg_pose(a_land), **ARMS}.items():
             q[robot.qadr[n]] = v
         self.q_nom = q[7:]
-        self.z_land, self.x_offset = z_land, x_offset
+        self.z_land, self.x_offset, self.iacvm_roll = z_land, x_offset, iacvm_roll
         self.k_L, self.k_ori, self.i_body, self.kp_post, self.kp_ori = k_L, k_ori, i_body, kp_post, kp_ori
         self.c_ref = None
 
@@ -78,11 +89,11 @@ class LandingController:
         Ldot = -self.k_L * L
         Ldot[:2] += self.i_body * (-self.k_ori * rpy[:2])
         W = self.wqp.solve(r, c, F_des, Ldot)
-        for k, s in enumerate(FEET):                         # IACVM on foot pitch only
+        for k, s in enumerate(FEET):                         # IACVM on foot pitch (and roll if iacvm_roll)
             w6 = np.zeros(6)
             mujoco.mj_objectVelocity(r.m, d, mujoco.mjtObj.mjOBJ_BODY, r.foot_body[s], w6, 1)
             dT = self.iacvm(r.body_rpy(r.foot_body[s])[:2], w6[:2], dt)
-            W[k, 3:6] += r.foot_R(s) @ np.array([0.0, dT[1], 0.0])
+            W[k, 3:6] += r.foot_R(s) @ np.array([dT[0] * self.iacvm_roll, dT[1], 0.0])
         qdd = np.zeros(r.nv)
         qdd[6:] = self.kp_post * (self.q_nom - d.qpos[7:]) - 2 * np.sqrt(self.kp_post) * d.qvel[6:]
         qdd[3:6] = -self.kp_ori * np.array([rpy[0], rpy[1], 0.0]) - 2 * np.sqrt(self.kp_ori) * d.qvel[3:6]
