@@ -119,6 +119,7 @@ Findings:
 - Nominal (0.10, 0.40): [D] 1051 iters, 131–136 s vs [T] 12.3 s (pipeline) or 26.9 s (naive Stage 3). Per iteration about 0.13 s vs 45 ms; iterations 1.7× the [T] naive baseline from the same kind of guess.
 - Grid: [D] optimizes 20/20 ([T] 16/20; [D] also solves l 0.6). Median 122.3 s (24.5–177.9 s, 976 iters) vs [T] 22.1 s. End to end: real H1-2 0/20, limits removed 11/20 (same with the landing controller), [T] 11/20 (14/20 after the roll-IACVM fix of 2026-11-17; the [D] runs with the landing controller predate it).
 - High torque comes from (1) no torque limit in the NLP, (2) the toe-only phase: ankle τ ≈ toe force × 0.174 m (≈ 145 N·m per side vs limit 60), (3) free dt rewarding a short, hard push (toe phase 31 ms at 2.3–2.6 BW). The first-order transcription adds spikes at phase transitions (knee 272 rad/s²); [T]'s jerk input avoids those, but they are not the plateau.
+- **Flat push-off variant** (`--flat`, NOT in the paper, comparison only, 2026-11-18): phase 1 uses all 8 corners, landing unchanged. 1250 iters, 159.6 s. Peak torque/limit flat vs toe: ankle 1.99 vs 2.57, hip 2.01 vs 1.48, knee 1.41 vs 1.34, shoulder 1.28 vs 0.53, elbow 1.99 vs 0.69; 10 joints over the limit vs 6. The ankle drops but stays at about 2× and the load moves to hip and arms: the toe phase is only part of cause (2), and (1) and (3) remain. `results/dai2014_flat.*`, `results/dai2014_flat_vs_toe.png`. MuJoCo (limits removed, planned landing): both stand, touch-down ankle x 0.311 (toe) vs 0.313 m (flat), take-off vx 0.558 vs 0.650 m/s; video `python scripts/render_video.py compare-flat` → `results/compare_dai_flat.mp4`.
 - With the torque toggle on: 487 iters, 153.7 s, plan within limits, but the ankle sits exactly at its limit for the whole 0.25 s toe phase; MuJoCo saturates in 44 % of the launch and falls. A finer grid (diagnostic) does not help: zero headroom in toe stance, not discretization.
 - Even with unlimited torque the robot lands short (median 96 mm, up to 175 mm at h 0.20): simulated take-off velocity 0.07–0.23 m/s below the plan. Hypothesis (untested): transcription error with dt up to 104 ms and base-row residuals up to 1142 N at phase transitions.
 
@@ -154,6 +155,18 @@ The paper covers flat ground only. The user asked for a jump onto a box (2026-11
 - Distance matters more than the edge position:
   - With h 0.2, l 0.4 (edge 0.25) is infeasible. The toe starts at x 0.174 and passes the edge after only 6 cm of travel, before the foot can rise 0.1 m.
   - l 0.6 (edge 0.45) hits 1500 iters, from either guess.
+- Same box for [T] and [D], h 0.20, l 0.40, `box = (0.10, 0.30)` (2026-11-17). The edge sits 1.4 cm behind the planned heel. Video: `python scripts/render_video.py compare-box --same` → `results/compare_box_l0.4_same.mp4` ([T] left, [D] right, side views, 1280×720, 0.5×).
+- Box edge per method, so both stand (2026-11-17), h 0.20, l 0.40, height 0.10. Video: `python scripts/render_video.py compare-box` → `results/compare_box_l0.4.mp4`.
+  - No common edge exists: [T] is infeasible below 0.28 (0.26: 866 iters warm, Restoration_Failed naive); [D] (limits removed, planned landing) stands only at 0.26 of 0.22/0.24/0.26/0.28/0.30.
+  - [T] edge 0.30: as above, stands. [D] edge 0.26: 194.8 s (1248 iters), touches down at ankle x 0.307 m (plan 0.400), stands (pelvis z 0.87 m). Plan: `results/dai2014_box_l0.4_e0.26.npz`.
+  - [T]: 12.7 s total (Stage 3 215 iters).
+    - MuJoCo, real limits, landing controller: touches down at ankle x 0.341 m (plan 0.400). The heel overhangs the edge by about 4.5 cm, yet it **stands** (pelvis z 0.95 m).
+    - Edge 0.28 converges too (469 iters); h 0.15 hits 1500 iters.
+  - [D]: 174.8 s (1329 iters). Every way of running the plan **falls**:
+    - Limits removed, planned landing: touches down 13.6 cm short (ankle x 0.264 m), the heels end off the box, and it falls backwards.
+    - Limits removed, landing controller: the simulation blows up.
+    - Real limits, landing controller: touches down at ankle x 0.064 m and hits the front face.
+  - Plans: `results/stage3_box_l0.4.npz`, `results/dai2014_box_l0.4.npz`.
 
 ## Environment and commands
 

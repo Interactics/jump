@@ -65,8 +65,10 @@ def schedule(h_jump: float):
 
 
 def solve(h_jump: float = 0.10, l_jump: float = 0.40, max_iter: int = 3000, verbose: int = 0, ipopt: dict | None = None,
-          torque_limits: bool = False, y_jump: float = 0.0, box: tuple | None = None) -> dict:
+          torque_limits: bool = False, y_jump: float = 0.0, box: tuple | None = None, flat: bool = False) -> dict:
     ph, act, dur = schedule(h_jump)
+    if flat:    # ponytail: NOT in the paper, comparison only; push-off on all 8 corners (no toe-only phase), landing unchanged
+        act = [ALL if p == 1 else a for p, a in zip(ph, act)]
     N = len(ph)
     n_ph = np.bincount(ph)
     dt_nom = dur[ph] / n_ph[ph]                                 # nominal dt of the interval ending at knot k
@@ -287,11 +289,12 @@ if __name__ == "__main__":
     h_jump, l_jump, y_jump = (nums + [0.0])[:3] if len(nums) >= 2 else (0.10, 0.40, 0.0)
     tl = "--torque-limits" in sys.argv
     bx = BOX if "--box" in sys.argv else None
-    s = solve(h_jump, l_jump, verbose=5 if "--verbose" in sys.argv else 0, torque_limits=tl, y_jump=y_jump, box=bx)
+    fl = "--flat" in sys.argv
+    s = solve(h_jump, l_jump, verbose=5 if "--verbose" in sys.argv else 0, torque_limits=tl, y_jump=y_jump, box=bx, flat=fl)
     report(s)
     for k, n in s["rows"].items():
         print(f"  {n:5d}  {k}")
-    tag = ("dai2014_tau" if tl else "dai2014") + (f"_y{y_jump}" if y_jump else "") + ("_box" if bx else "")
+    tag = ("dai2014_tau" if tl else "dai2014") + (f"_y{y_jump}" if y_jump else "") + ("_box" if bx else "") + ("_flat" if fl else "")
     plot(s, ROOT / "results" / f"{tag}.png")
     save(s, ROOT / "results" / f"{tag}.npz")
     assert s["ok"], "did not converge"
